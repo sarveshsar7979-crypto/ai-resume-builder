@@ -1,19 +1,120 @@
 @import "tailwindcss";
 
 :root {
-  --background: #000000;
-  --foreground: #ededed;
+  color-scheme: light;
+  --background: #f7f4ee;
+  --foreground: #16181d;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-ink: #16181d;
+  --color-muted: #5b5f68;
+  --color-line: #e6e1d8;
+  --color-cream: #fbf9f5;
+  --color-poppy: #ef5a1c;
+  --color-poppy-soft: #fde7da;
+  --color-violet: #7c62d0;
+  --color-violet-soft: #ece6fb;
+  --color-leaf: #4f7a2e;
+  --color-leaf-soft: #e5efd9;
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-outfit);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* ---------- hero motion ---------- */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(18px); filter: blur(8px); }
+  to { opacity: 1; transform: none; filter: blur(0); }
+}
+@keyframes drop {
+  from { opacity: 0; transform: translateY(-14px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+@keyframes ring {
+  from { stroke-dashoffset: var(--ring-len); }
+  to { stroke-dashoffset: var(--ring-to); }
+}
+@keyframes zoom-out {
+  from { transform: scale(1.08); }
+  to { transform: scale(1); }
+}
+@keyframes drift {
+  0%, 100% { transform: scale(1.04) translate3d(0, 0, 0); }
+  50% { transform: scale(1.09) translate3d(-1%, -0.6%, 0); }
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+.anim-rise { animation: rise 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.anim-drop { animation: drop 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.anim-bob { animation: bob 6s ease-in-out infinite; }
+.anim-zoom { animation: zoom-out 2.4s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.anim-drift { animation: drift 28s ease-in-out infinite; will-change: transform; }
+.caret { animation: blink 1s step-end infinite; }
+
+/* Hero content fades and lifts as the page scrolls (where supported). */
+@supports (animation-timeline: scroll()) {
+  @keyframes hero-out {
+    to { opacity: 0; transform: translateY(-60px) scale(0.98); }
+  }
+  .hero-scroll-out {
+    animation: hero-out linear both;
+    animation-timeline: scroll(root);
+    animation-range: 0 70vh;
+  }
+}
+
+/* Scroll reveal for sections below the hero. */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.8s cubic-bezier(0.2, 0.7, 0.2, 1), transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.reveal.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+/* ---------- app motion ---------- */
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+}
+.anim-fade { animation: fade-in 0.2s ease-out both; }
+.anim-pop { animation: pop-in 0.22s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+
+/* ---------- PDF download (browser "Save as PDF") ---------- */
+#print-root { display: none; }
+@media print {
+  @page { size: letter; margin: 0; }
+  body > *:not(#print-root) { display: none !important; }
+  #print-root { display: block; width: 8.5in; background: #fff; }
+  #print-root .resume-doc { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade, .anim-pop { animation: none !important; }
+  html { scroll-behavior: auto; }
+  .anim-rise, .anim-drop, .anim-bob, .anim-zoom, .anim-drift, .hero-scroll-out, .caret { animation: none !important; }
+  .reveal { opacity: 1; transform: none; transition: none; }
 }
