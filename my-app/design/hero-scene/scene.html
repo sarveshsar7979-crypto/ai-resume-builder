@@ -1,0 +1,360 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Hero scene</title>
+<style>
+  html, body { margin: 0; background: #000; }
+  canvas { display: block; width: 100vw; height: auto; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+/*
+  Hero background: an alpine valley at golden hour with a flower meadow.
+  Deterministic, loops every L seconds, so it can be rendered frame by frame
+  into a seamless video (see capture.mjs).
+
+    scene.html          live preview
+    scene.html?t=3.5    still frame at 3.5s
+*/
+const W = 1920, H = 1080, L = 10, TAU = Math.PI * 2;
+const SUN = { x: 1010, y: 640 };
+
+/* ---------- helpers ---------- */
+function rng(seed) {
+  return () => {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const R = rng(42);
+const rand = (a, b) => a + (b - a) * R();
+const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const hex = (h) => { const n = parseInt(h.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
+const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+const rgb = (c, a = 1) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`;
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+
+function hash2(i, j, s) {
+  let h = (Math.imul(i, 374761393) + Math.imul(j, 668265263) + Math.imul(s, 982451653)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function vnoise(x, y, s) {
+  const i = Math.floor(x), j = Math.floor(y), fx = x - i, fy = y - j;
+  const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy);
+  const a = hash2(i, j, s), b = hash2(i + 1, j, s), c = hash2(i, j + 1, s), d = hash2(i + 1, j + 1, s);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function fbm(x, y, s, o = 5) { let t = 0, a = 0.5, f = 1; for (let k = 0; k < o; k++) { t += a * vnoise(x * f, y * f, s + k); a *= 0.5; f *= 2.03; } return t; }
+// smooth curve through control points [[x,y],...]
+function profile(pts) {
+  return (x) => {
+    if (x <= pts[0][0]) return pts[0][1];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
+      if (x <= x1) { const t = (x - x0) / (x1 - x0), u = t * t * (3 - 2 * t); return y0 + (y1 - y0) * u; }
+    }
+    return pts[pts.length - 1][1];
+  };
+}
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+/* ---------- static backdrop: sky, mountains, hills (per pixel) ---------- */
+const PADX = 40;                       // extra width for the slow camera drift
+const BW = W + PADX * 2;
+const back = mk(BW, H);
+{
+  const c = back.getContext('2d');
+  const img = c.createImageData(BW, H), d = img.data;
+  const skyTop = hex('#b9c7d3'), skyMid = hex('#dfe0e0'), skyLow = hex('#f6dcc6'), haze = hex('#f1dccf');
+
+  // layers, back to front. ridge(x) gives the top edge in backdrop coords.
+  const layers = [
+    { // far range behind the valley
+      ridge: (x) => 560 + 40 * Math.sin(x / 210) - 70 * fbm(x / 160, 0.5, 11, 4) - 60 * smooth(1100, 1600, x),
+      haze: 0.62, rockLit: '#d9b9b4', rockDark: '#a68fa0', grass: '#a9a27d', veg: 700,
+    },
+    { // right flank
+      ridge: (x) => profile([[1180, 700], [1450, 560], [1720, 440], [1900, 330], [2010, 260]])(x) - 40 * fbm(x / 70, 1.3, 21, 5) + 10,
+      haze: 0.32, rockLit: '#d6c0b2', rockDark: '#8f8590', grass: '#7f9a4d', veg: 470,
+    },
+    { // big craggy peak on the left
+      ridge: (x) => profile([[-40, 300], [120, 205], [250, 170], [360, 128], [440, 175], [560, 300], [700, 470], [860, 640], [980, 720]])(x)
+        - 60 * (fbm(x / 55, 2.1, 31, 5) - 0.5) - 25 * (fbm(x / 14, 3.7, 37, 3) - 0.5),
+      haze: 0.12, rockLit: '#e9d3c2', rockDark: '#9c8f99', grass: '#93a245', veg: 430, crag: true,
+    },
+    { // golden hill, left
+      ridge: (x) => profile([[-40, 640], [300, 655], [650, 700], [1000, 760], [1200, 800]])(x) - 14 * fbm(x / 90, 4.4, 41, 3),
+      haze: 0.04, grass: '#b8a84a', grassDark: '#6f7a33', hill: true,
+    },
+    { // green hill, right
+      ridge: (x) => profile([[860, 800], [1150, 720], [1500, 655], [1800, 620], [2010, 600]])(x) - 12 * fbm(x / 80, 5.1, 51, 3),
+      haze: 0.04, grass: '#6f9a3c', grassDark: '#3d5e28', hill: true,
+    },
+  ];
+  const ridges = layers.map((l) => { const a = new Float32Array(BW); for (let x = 0; x < BW; x++) a[x] = l.ridge(x - PADX); return a; });
+
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < BW; x++) {
+      const wx = x - PADX;
+      // sky
+      let col;
+      const sy = y / 680;
+      col = sy < 0.55 ? mix(skyTop, skyMid, smooth(0, 0.55, sy)) : mix(skyMid, skyLow, smooth(0.55, 1, sy));
+      const sd = Math.hypot((wx - SUN.x) / 1.6, y - SUN.y);
+      col = mix(col, [255, 236, 214], 0.55 * Math.exp(-sd / 260));
+
+      for (let li = 0; li < layers.length; li++) {
+        const l = layers[li], top = ridges[li][x];
+        if (y < top) continue;
+        const depth = y - top;
+        let c2;
+        if (l.hill) {
+          const n = fbm(wx / 40, y / 22, 60 + li, 4);
+          const lit = clamp(0.55 + (n - 0.5) * 1.4 - depth / 600);
+          c2 = mix(hex(l.grassDark), hex(l.grass), lit);
+          c2 = mix(c2, [255, 214, 140], 0.35 * Math.exp(-depth / 14));     // sunlit crest
+          c2 = mix(c2, [255, 200, 120], 0.12 * Math.exp(-Math.abs(wx - SUN.x) / 500));
+        } else {
+          // rock streaks: stretched noise, lit from the right (the sun side)
+          const sx = l.crag ? 0.009 : 0.012, syy = l.crag ? 0.006 : 0.008;
+          const h0 = (xx) => fbm(xx * sx, y * syy, 70 + li, 5) + 0.25 * fbm(xx * 0.035, y * 0.03, 80 + li, 3);
+          const slope = (h0(wx + 5) - h0(wx - 5)) * 9;
+          const face = l.crag ? (wx > 360 ? 0.12 : -0.12) : (wx > 1700 ? -0.08 : 0.08);
+          const lit = clamp(0.52 + slope + face - depth / 1100);
+          let rock = mix(hex(l.rockDark), hex(l.rockLit), lit);
+          // vegetation on lower slopes
+          const vn = fbm(wx / 60, y / 40, 90 + li, 4);
+          const veg = smooth(l.veg - 10, l.veg + 30, y + (vn - 0.5) * 220) * (l.crag ? smooth(0.32, 0.42, vn + 0.12) : 1);
+          let grass = mix(hex("#4f6a2c"), hex(l.grass), clamp(0.35 + slope * 1.2 + face + (vn - 0.5)));
+          c2 = mix(rock, grass, veg);
+          c2 = mix(c2, [255, 222, 190], 0.25 * Math.exp(-depth / 10) * lit);  // rim light on ridge
+        }
+        // aerial perspective (more haze toward the sun)
+        const hz = clamp(l.haze + 0.18 * Math.exp(-sd / 380));
+        col = mix(c2, haze, hz);
+      }
+      const p = (y * BW + x) * 4;
+      d[p] = col[0]; d[p + 1] = col[1]; d[p + 2] = col[2]; d[p + 3] = 255;
+    }
+  }
+  c.putImageData(img, 0, 0);
+
+  // valley mist
+  const mg = c.createLinearGradient(0, 600, 0, 760);
+  mg.addColorStop(0, 'rgba(250,228,210,0)');
+  mg.addColorStop(0.5, 'rgba(250,228,210,0.28)');
+  mg.addColorStop(1, 'rgba(250,228,210,0)');
+  c.fillStyle = mg; c.fillRect(0, 600, BW, 160);
+
+  // trees: clusters of soft blobs, lit from the sun side
+  function tree(x, y, s, seed) {
+    const r = rng(seed);
+    x += PADX;
+    c.fillStyle = 'rgba(40,50,25,0.35)';
+    c.beginPath(); c.ellipse(x + 10 * s, y + 2, 46 * s, 7 * s, 0, 0, TAU); c.fill();
+    c.strokeStyle = '#3b2a1e'; c.lineWidth = 6 * s;
+    c.beginPath(); c.moveTo(x, y); c.lineTo(x + 2 * s, y - 40 * s); c.stroke();
+    for (let i = 0; i < 160; i++) {
+      const a = r() * TAU, rr = Math.sqrt(r()) * 42 * s;
+      const bx = x + Math.cos(a) * rr * 1.05, by = y - 78 * s + Math.sin(a) * rr * 0.95;
+      const br = (6 + r() * 9) * s;
+      const toSun = clamp(0.5 + (SUN.x + PADX - bx) / 900 * 0.6 + (y - 78 * s - by) / (60 * s) * 0.4);
+      const col = mix(hex('#1f2e17'), hex('#8f9a3a'), Math.pow(toSun, 1.2));
+      const g = c.createRadialGradient(bx - br * 0.3, by - br * 0.3, 0, bx, by, br);
+      g.addColorStop(0, rgb(mix(col, [255, 190, 110], 0.25 * toSun)));
+      g.addColorStop(1, rgb(col));
+      c.fillStyle = g; c.beginPath(); c.arc(bx, by, br, 0, TAU); c.fill();
+    }
+  }
+  tree(1235, 735, 1.25, 7);
+  tree(820, 742, 0.75, 9);
+  tree(870, 748, 0.55, 12);
+  tree(1580, 650, 0.45, 15);
+}
+
+/* ---------- flower sprites ---------- */
+function sprite(kind, size, blur) {
+  const pad = blur * 3, c0 = mk(size + pad * 2, size + pad * 2), c = c0.getContext('2d');
+  if (blur) c.filter = `blur(${blur}px)`;
+  c.translate(c0.width / 2, c0.height / 2);
+  const r = size * 0.45;
+  const petal = (n, len, wid, col, center, off = 0) => {
+    for (let i = 0; i < n; i++) {
+      c.save(); c.rotate((i / n) * TAU + off);
+      const g = c.createLinearGradient(0, 0, len, 0);
+      g.addColorStop(0, rgb(mix(hex(col), [60, 10, 10], 0.25))); g.addColorStop(1, rgb(mix(hex(col), [255, 255, 255], 0.18)));
+      c.fillStyle = g;
+      c.beginPath(); c.ellipse(len * 0.52, 0, len * 0.52, wid, 0, 0, TAU); c.fill();
+      c.restore();
+    }
+    c.fillStyle = center; c.beginPath(); c.arc(0, 0, r * 0.18, 0, TAU); c.fill();
+  };
+  if (kind === 'poppy') petal(5, r, r * 0.52, '#f2641f', '#3a1a10');
+  if (kind === 'poppy2') petal(5, r, r * 0.5, '#f7932b', '#4a2a10');
+  if (kind === 'daisy') petal(14, r, r * 0.13, '#f7f3ec', '#f0b62a');
+  if (kind === 'violet') petal(6, r * 0.9, r * 0.32, '#8f73da', '#f5e08a');
+  if (kind === 'lilac') petal(6, r * 0.85, r * 0.3, '#b49ae8', '#fff1b0');
+  if (kind === 'yellow') petal(5, r * 0.8, r * 0.36, '#f4c531', '#b86d12');
+  return c0;
+}
+const KINDS = [['poppy', 26], ['poppy2', 12], ['violet', 24], ['lilac', 14], ['daisy', 18], ['yellow', 6]];
+const KW = KINDS.reduce((a, k) => a + k[1], 0);
+const pickKind = () => { let x = R() * KW; for (const k of KINDS) { x -= k[1]; if (x <= 0) return k[0]; } return 'poppy'; };
+const SP = {}, SPB = {};
+for (const [k] of KINDS) { SP[k] = sprite(k, 72, 0); SPB[k] = [sprite(k, 150, 4), sprite(k, 150, 9)]; }
+
+/* ---------- meadow ---------- */
+const MTOP = 770;
+const sOf = (y) => clamp((y - MTOP + 40) / (H - MTOP + 40), 0.05, 1.4);
+const items = [];
+for (let i = 0; i < 6500; i++) {        // grass blades
+  const y = MTOP - 30 + Math.pow(R(), 0.85) * (H - MTOP + 90);
+  const s = sOf(y);
+  items.push({ g: 1, x: rand(-60, W + 60), y, s, h: rand(30, 95) * s, lean: rand(-0.35, 0.35), w: rand(1.2, 3) * s,
+    col: rgb(mix(hex('#2d4a1f'), hex('#7c9a3e'), R() * (0.4 + 0.6 * (1 - s)))), tip: rgb(mix(hex('#c9c46a'), [255, 220, 150], R()), 0.85), ph: R() * TAU });
+}
+for (let i = 0; i < 1150; i++) {        // flowers
+  const y = MTOP - 20 + Math.pow(R(), 1.1) * (H - MTOP + 60);
+  const s = sOf(y);
+  items.push({ g: 0, x: rand(-40, W + 40), y, s, kind: pickKind(), size: rand(16, 30) * s, stem: rand(25, 80) * s,
+    lean: rand(-0.2, 0.2), rot: R() * TAU, squash: rand(0.45, 0.9), ph: R() * TAU });
+}
+items.sort((a, b) => a.y - b.y);
+const fore = Array.from({ length: 18 }, () => ({ x: rand(-80, W + 80), y: rand(H - 30, H + 160), s: rand(1.3, 2.4),
+  kind: pickKind(), rot: R() * TAU, squash: rand(0.55, 0.9), ph: R() * TAU, b: R() < 0.45 ? 0 : 1 })).sort((a, b) => a.y - b.y);
+
+// mid-distance flower specks on the hills (static, baked)
+const specks = mk(BW, H);
+{
+  const c = specks.getContext('2d');
+  for (let i = 0; i < 9000; i++) {
+    const y = rand(700, MTOP + 30), x = rand(0, BW);
+    const k = pickKind(), s = (y - 690) / 140;
+    const col = { poppy: '#f06a28', poppy2: '#f39a3a', violet: '#9a82df', lilac: '#bba5ea', daisy: '#f5f0e8', yellow: '#f2c840' }[k];
+    c.fillStyle = col; c.globalAlpha = 0.55 + R() * 0.4;
+    c.fillRect(x, y, 1 + s * 2.4, 0.8 + s * 1.6);
+  }
+}
+
+/* ---------- birds, pollen, light ---------- */
+const birds = [
+  { x0: 1990, y0: 360, x1: 1260, y1: -30, t0: 0.4, t1: 9.4, sc: 1, ph: 0 },
+  { x0: 2030, y0: 385, x1: 1300, y1: -10, t0: 0.6, t1: 9.6, sc: 0.85, ph: 1.7 },
+  { x0: 2060, y0: 350, x1: 1340, y1: -50, t0: 0.9, t1: 9.8, sc: 0.7, ph: 3.1 },
+];
+const pollen = Array.from({ length: 70 }, () => ({ x: rand(0, W), y: rand(560, 1060), off: R(), m: 1 + Math.floor(R() * 2),
+  rise: rand(80, 260), drift: rand(20, 120), r: rand(1, 3.2), ph: R() * TAU }));
+
+/* ---------- frame ---------- */
+const wind = (x, t) => Math.sin(TAU * 2 * t / L - x * 0.0045) * 0.7 + Math.sin(TAU * 3 * t / L - x * 0.011 + 1.3) * 0.3;
+const drift = (t, k) => Math.sin(TAU * t / L) * 10 * k;
+
+function renderFrame(t) {
+  t = ((t % L) + L) % L;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(back, -PADX + drift(t, 0.25), 0);
+
+  // soft sun rays
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 6; i++) {
+    const a = -Math.PI / 2 + (i - 2.5) * 0.32;
+    const pulse = 0.5 + 0.5 * Math.sin(TAU * (1 + (i % 2)) * t / L + i * 1.9);
+    const g = ctx.createRadialGradient(SUN.x, SUN.y, 0, SUN.x, SUN.y, 900);
+    g.addColorStop(0, `rgba(255,228,190,${0.028 * pulse})`); g.addColorStop(1, 'rgba(255,228,190,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(SUN.x, SUN.y);
+    ctx.arc(SUN.x, SUN.y, 900, a - 0.11, a + 0.11); ctx.closePath(); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // birds
+  ctx.strokeStyle = 'rgba(55,50,60,0.75)'; ctx.lineCap = 'round';
+  for (const b of birds) {
+    const p = (t - b.t0) / (b.t1 - b.t0);
+    if (p < 0 || p > 1) continue;
+    const x = b.x0 + (b.x1 - b.x0) * p + Math.sin(p * 9 + b.ph) * 6, y = b.y0 + (b.y1 - b.y0) * p + Math.sin(p * 13 + b.ph) * 4;
+    const f = Math.sin(TAU * t * 2.2 + b.ph) * 4 * b.sc, s = 9 * b.sc;
+    ctx.lineWidth = 1.6 * b.sc;
+    ctx.beginPath(); ctx.moveTo(x - s, y - f); ctx.quadraticCurveTo(x - s * 0.4, y - 2 * b.sc, x, y);
+    ctx.quadraticCurveTo(x + s * 0.4, y - 2 * b.sc, x + s, y - f); ctx.stroke();
+  }
+
+  ctx.drawImage(specks, -PADX + drift(t, 0.45), 0);
+
+  // meadow, back to front
+  const md = (s) => drift(t, 0.5 + s * 0.6);
+  for (const it of items) {
+    const w = wind(it.x, t) + 0.25 * Math.sin(TAU * 3 * t / L + it.ph);
+    const dx = md(it.s);
+    if (it.g) {
+      const bend = (it.lean + w * 0.32) * it.h;
+      const bx = it.x + dx, tx = bx + bend, ty = it.y - it.h;
+      ctx.strokeStyle = it.col; ctx.lineWidth = it.w;
+      ctx.beginPath(); ctx.moveTo(bx, it.y); ctx.quadraticCurveTo(bx + bend * 0.15, it.y - it.h * 0.6, tx, ty); ctx.stroke();
+      ctx.strokeStyle = it.tip; ctx.lineWidth = it.w * 0.7;
+      ctx.beginPath(); ctx.moveTo(bx + bend * 0.62, it.y - it.h * 0.75); ctx.quadraticCurveTo(bx + bend * 0.8, it.y - it.h * 0.88, tx, ty); ctx.stroke();
+    } else {
+      const bend = (it.lean + w * 0.22) * it.stem;
+      const bx = it.x + dx, hx = bx + bend, hy = it.y - it.stem;
+      ctx.strokeStyle = 'rgba(52,78,34,0.95)'; ctx.lineWidth = Math.max(0.8, 2 * it.s);
+      ctx.beginPath(); ctx.moveTo(bx, it.y); ctx.quadraticCurveTo(bx + bend * 0.2, it.y - it.stem * 0.5, hx, hy); ctx.stroke();
+      ctx.save(); ctx.translate(hx, hy); ctx.scale(1, it.squash); ctx.rotate(it.rot + w * 0.15);
+      ctx.drawImage(SP[it.kind], -it.size / 2, -it.size / 2, it.size, it.size);
+      ctx.restore();
+    }
+  }
+
+  // drifting pollen
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of pollen) {
+    const q = ((t / L) * p.m + p.off) % 1;
+    const x = p.x + p.drift * q + Math.sin(q * TAU * 2 + p.ph) * 12 + drift(t, 0.8);
+    const y = p.y - p.rise * q;
+    const a = Math.sin(Math.PI * q) * 0.75;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, p.r * 3);
+    g.addColorStop(0, `rgba(255,244,215,${a})`); g.addColorStop(1, 'rgba(255,240,210,0)');
+    ctx.fillStyle = g; ctx.fillRect(x - p.r * 3, y - p.r * 3, p.r * 6, p.r * 6);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // out-of-focus foreground flowers
+  for (const f of fore) {
+    const w = Math.sin(TAU * 2 * t / L - f.x * 0.003 + f.ph) * 10;
+    ctx.save(); ctx.translate(f.x + w + drift(t, 1.4), f.y); ctx.scale(1, f.squash); ctx.rotate(f.rot + w * 0.012);
+    const sp = SPB[f.kind][f.b], r = 70 * f.s * (sp.width / 150);
+    ctx.drawImage(sp, -r / 2, -r / 2, r, r);
+    ctx.restore();
+  }
+
+  // warm bloom from the valley + gentle vignette
+  ctx.globalCompositeOperation = 'screen';
+  const bl = ctx.createRadialGradient(SUN.x, SUN.y, 0, SUN.x, SUN.y, 700);
+  bl.addColorStop(0, 'rgba(255,214,170,0.35)'); bl.addColorStop(1, 'rgba(255,214,170,0)');
+  ctx.fillStyle = bl; ctx.fillRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'source-over';
+  const v = ctx.createRadialGradient(W / 2, H * 0.45, H * 0.45, W / 2, H * 0.5, H * 1.1);
+  v.addColorStop(0, 'rgba(20,20,30,0)'); v.addColorStop(1, 'rgba(20,20,30,0.28)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+
+window.SCENE = { W, H, L, renderFrame };
+const qs = new URLSearchParams(location.search);
+if (qs.has('t')) renderFrame(parseFloat(qs.get('t')));
+else if (!qs.has('static')) {
+  const t0 = performance.now();
+  const loop = () => { renderFrame((performance.now() - t0) / 1000); requestAnimationFrame(loop); };
+  loop();
+}
+</script>
+</body>
+</html>
